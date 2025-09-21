@@ -89,7 +89,7 @@ export default function Home() {
       fd.append("file1", file1);
       fd.append("file2", file2);
 
-      const res = await fetch("meterdiff/api/diff", { method: "POST", body: fd });
+      const res = await fetch("api/diff", { method: "POST", body: fd });
       if (!res.ok) {
         let msg = `Request failed (${res.status})`;
         try {
@@ -128,7 +128,7 @@ export default function Home() {
           <div
             className="pointer-events-none absolute inset-0 -z-0 flex items-center justify-center"
             style={{
-              backgroundImage: `url('meterdiff/image.png')`,
+              backgroundImage: `url('/image.png')`,
               backgroundRepeat: "no-repeat",
               backgroundPosition: "center",
               backgroundSize: "contain",

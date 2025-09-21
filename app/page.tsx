@@ -1,4 +1,3 @@
-// app/page.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -8,7 +7,6 @@ import clsx from "clsx";
 type DropState = "idle" | "over1" | "over2";
 
 function formatDeadlineForRiyadh(d: Date) {
-  // Format date/time explicitly in Asia/Riyadh
   return d.toLocaleString("en-GB", {
     year: "numeric",
     month: "short",
@@ -41,14 +39,12 @@ export default function Home() {
   const initialNow = useMemo(() => new Date(), []);
   const [now, setNow] = useState<Date>(initialNow);
 
-  // deadline = exactly one year from initial load (keeps consistent)
   const deadline = useMemo(() => {
     const d = new Date(initialNow);
     d.setFullYear(d.getFullYear() + 1);
     return d;
   }, [initialNow]);
 
-  // countdown refresh every 1s
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
@@ -57,7 +53,6 @@ export default function Home() {
   const msLeft = Math.max(0, deadline.getTime() - now.getTime());
   const isExpired = msLeft <= 0;
 
-  // helper to pick files
   const onFilesPicked = (which: 1 | 2, files: FileList | null) => {
     const f = files?.[0] ?? null;
     if (which === 1) setFile1(f);
@@ -94,7 +89,7 @@ export default function Home() {
       fd.append("file1", file1);
       fd.append("file2", file2);
 
-      const res = await fetch("/api/diff", { method: "POST", body: fd });
+      const res = await fetch("meterdiff/api/diff", { method: "POST", body: fd });
       if (!res.ok) {
         let msg = `Request failed (${res.status})`;
         try {
@@ -111,8 +106,12 @@ export default function Home() {
         })
       );
       setDownloadUrl(url);
-    } catch (err: any) {
-      setError(err?.message || "Something went wrong.");
+    } catch (err: unknown) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(String(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -120,28 +119,24 @@ export default function Home() {
 
   return (
     <main className="relative min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-black text-zinc-100">
-      {/* subtle glow */}
       <div className="pointer-events-none absolute inset-0 [mask-image:radial-gradient(50%_50%_at_50%_50%,#000_20%,transparent_70%)]">
         <div className="absolute left-1/2 top-24 h-72 w-72 -translate-x-1/2 rounded-full bg-gradient-to-tr from-indigo-500/20 via-sky-400/20 to-fuchsia-500/20 blur-3xl" />
       </div>
 
       <div className="container mx-auto flex min-h-screen items-center justify-center p-6">
-        {/* Card container set to relative so watermark can be absolutely positioned inside it */}
         <div className="relative w-full max-w-2xl rounded-3xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur-md overflow-hidden">
-          {/* Watermark background (non-interactive) */}
           <div
             className="pointer-events-none absolute inset-0 -z-0 flex items-center justify-center"
             style={{
-              backgroundImage: `url('/image.png')`,
+              backgroundImage: `url('meterdiff/image.png')`,
               backgroundRepeat: "no-repeat",
               backgroundPosition: "center",
               backgroundSize: "contain",
-              opacity: 0.3,
+              opacity: 0.1,
               filter: "blur(1px) saturate(0.9)",
             }}
           />
 
-          {/* Make sure main content sits above watermark */}
           <div className="relative z-10">
             <header className="mb-6 flex items-start justify-between gap-4">
               <div>
@@ -152,7 +147,6 @@ export default function Home() {
                 </p>
               </div>
 
-              {/* Deadline badge */}
               <div className="ml-4 flex flex-col items-end">
                 <div
                   className={clsx(
@@ -179,7 +173,6 @@ export default function Home() {
               {/* file 1 */}
               <div>
                 <label className="mb-2 block text-sm font-medium text-zinc-300">File 1</label>
-
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -189,9 +182,7 @@ export default function Home() {
                   onDrop={(e) => onDrop(e, 1)}
                   className={clsx(
                     "rounded-2xl border-2 border-dashed p-6 transition-colors",
-                    dropState === "over1"
-                      ? "border-sky-400/70 bg-sky-400/5"
-                      : "border-white/10 hover:border-white/20"
+                    dropState === "over1" ? "border-sky-400/70 bg-sky-400/5" : "border-white/10 hover:border-white/20"
                   )}
                 >
                   <div className="flex items-center gap-4">
@@ -222,10 +213,7 @@ export default function Home() {
                       <div className="flex items-center gap-2">
                         <FileSpreadsheet className="h-4 w-4" />
                         <span className="text-sm">
-                          {file1.name}{" "}
-                          <span className="text-zinc-400">
-                            ({(file1.size / 1024).toFixed(1)} KB)
-                          </span>
+                          {file1.name} <span className="text-zinc-400">({(file1.size / 1024).toFixed(1)} KB)</span>
                         </span>
                       </div>
                       <button
@@ -244,7 +232,6 @@ export default function Home() {
               {/* file 2 */}
               <div>
                 <label className="mb-2 block text-sm font-medium text-zinc-300">File 2</label>
-
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -254,9 +241,7 @@ export default function Home() {
                   onDrop={(e) => onDrop(e, 2)}
                   className={clsx(
                     "rounded-2xl border-2 border-dashed p-6 transition-colors",
-                    dropState === "over2"
-                      ? "border-fuchsia-400/70 bg-fuchsia-400/5"
-                      : "border-white/10 hover:border-white/20"
+                    dropState === "over2" ? "border-fuchsia-400/70 bg-fuchsia-400/5" : "border-white/10 hover:border-white/20"
                   )}
                 >
                   <div className="flex items-center gap-4">
@@ -287,10 +272,7 @@ export default function Home() {
                       <div className="flex items-center gap-2">
                         <FileSpreadsheet className="h-4 w-4" />
                         <span className="text-sm">
-                          {file2.name}{" "}
-                          <span className="text-zinc-400">
-                            ({(file2.size / 1024).toFixed(1)} KB)
-                          </span>
+                          {file2.name} <span className="text-zinc-400">({(file2.size / 1024).toFixed(1)} KB)</span>
                         </span>
                       </div>
                       <button

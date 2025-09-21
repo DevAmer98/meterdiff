@@ -1,10 +1,9 @@
-// app/api/diff/route.ts
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 
 export const runtime = "nodejs";
 
-type Row = Record<string, any>;
+type Row = Record<string, unknown>; // replace 'any' with unknown
 
 function normKey(k: string) {
   return String(k ?? "").trim().toLowerCase();
@@ -60,25 +59,22 @@ function parseNumberLike(n: unknown): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-/** Strategy A: normal JSON with keys (works when first real row is headers) */
 function detectColsFromObjectRows(rows: Row[]) {
   if (!rows.length) return null;
   const keys = Object.keys(rows[0]);
-  // ignore auto-generated __EMPTY keys
   const usable = keys.filter((k) => !k.startsWith("__empty"));
-  if (usable.length === 0) return null;
+  if (!usable.length) return null;
 
-  let meterKey: string | undefined = usable.find(looksLikeMeter);
-  let valueKey: string | undefined = usable.find(looksLikeValue);
+  const meterKey = usable.find(looksLikeMeter);
+  const valueKey = usable.find(looksLikeValue);
 
   if (!meterKey || !valueKey) return null;
   return { meterKey, valueKey };
 }
 
-/** Strategy B: scan for header row using header:1 (2D array) and take column indexes */
 function detectColsByScanning(ws: XLSX.WorkSheet) {
-  const grid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  const MAX_SCAN_ROWS = Math.min(grid.length, 50); // scan top 50 rows
+  const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  const MAX_SCAN_ROWS = Math.min(grid.length, 50);
 
   let headerRowIdx = -1;
   let meterCol = -1;
@@ -102,16 +98,13 @@ function detectColsByScanning(ws: XLSX.WorkSheet) {
   if (headerRowIdx === -1) return null;
 
   return {
-    // transform grid rows after headerRow into object rows using the detected columns
     toObjectRows(): Row[] {
       const out: Row[] = [];
       for (let r = headerRowIdx + 1; r < grid.length; r++) {
         const row = grid[r] || [];
         const meter = row[meterCol];
         const value = row[valueCol];
-        const obj: Row = {};
-        obj.__meter = meter;
-        obj.__value = value;
+        const obj: Row = { __meter: meter, __value: value };
         out.push(obj);
       }
       return out;
@@ -121,14 +114,12 @@ function detectColsByScanning(ws: XLSX.WorkSheet) {
   };
 }
 
-/** File -> Map(meter -> sum(value)) supporting both strategies */
 function fileToMeterMap(buf: Buffer) {
   const wb = XLSX.read(buf, { type: "buffer" });
   const sheetName = wb.SheetNames[0];
   if (!sheetName) return new Map<string, number>();
   const ws = wb.Sheets[sheetName];
 
-  // Strategy A: standard object rows
   const objectRows: Row[] = XLSX.utils.sheet_to_json(ws, { defval: null });
   let meterKey: string | null = null;
   let valueKey: string | null = null;
@@ -140,7 +131,6 @@ function fileToMeterMap(buf: Buffer) {
     valueKey = foundA.valueKey;
     rowsToUse = objectRows;
   } else {
-    // Strategy B: scan grid for header row/columns
     const scanned = detectColsByScanning(ws);
     if (!scanned) return new Map<string, number>();
     meterKey = scanned.meterProp;
@@ -195,7 +185,9 @@ export async function POST(req: Request) {
         "Cache-Control": "no-store",
       },
     });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? "Unknown error" }, { status: 500 });
+  } catch (e: unknown) {
+    let msg = "Unknown error";
+    if (e instanceof Error) msg = e.message;
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

@@ -307,22 +307,32 @@ export async function POST(req: Request) {
     console.log("Sample readings meter values:", readingsSample5);
     console.log("Sample mapping keys:", mappingKeys5);
 
-    // --- Output Excel ---
-    const outWb = XLSX.utils.book_new();
-    const outSheet = XLSX.utils.json_to_sheet(merged);
-    XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
+   // --- Output Excel ---
+const outWb = XLSX.utils.book_new();
+const outSheet = XLSX.utils.json_to_sheet(merged);
+XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
 
-    const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
+const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 
-    const responseHeaders = new Headers();
-    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
+const responseHeaders = new Headers();
+responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
 
-    return new Response(outArray, { status: 200, headers: responseHeaders });
+// ✅ Wrap in Blob to satisfy BodyInit and be runtime-agnostic
+const outBlob = new Blob([outArray], {
+  type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+});
+
+return new Response(outBlob, { status: 200, headers: responseHeaders });
+
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal error";
     const stack = err instanceof Error ? err.stack : undefined;
     console.error("merge error:", err);
     return NextResponse.json({ error: message, stack }, { status: 500 });
   }
+
+
+
+  
 }

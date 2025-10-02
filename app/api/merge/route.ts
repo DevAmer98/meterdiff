@@ -1,24 +1,24 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 
+export const runtime = "nodejs";
+
 type SheetRow = Record<string, unknown>;
 
 function normalizeHeaderKey(h: unknown): string {
   return String(h ?? "")
     .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "") // strip diacritics
-    .replace(/[^0-9a-zA-Z]/g, "") // remove punctuation & spaces
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^0-9a-zA-Z]/g, "")
     .trim()
     .toLowerCase();
 }
 
 function findKeyByNormalizedTokens(headers: string[], tokens: string[]): string | null {
   const normalizedList = headers.map((h) => ({ orig: h, norm: normalizeHeaderKey(h) }));
-
   console.log("Searching in headers:", normalizedList);
   console.log("Looking for tokens (raw):", tokens);
 
-  // Normalize tokens once
   const normTokens = tokens.map((t) => normalizeHeaderKey(t));
 
   // exact token match
@@ -38,52 +38,34 @@ function findKeyByNormalizedTokens(headers: string[], tokens: string[]): string 
       return found.orig;
     }
   }
-
   return null;
 }
 
-// --- Convert workbook to JSON with proper header detection ---
 function workbookToJsonFromBuffer(buf: ArrayBuffer): SheetRow[] {
   const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
-
-  // First, get the raw data to inspect the structure
   const rawData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null }) as unknown[][];
 
   console.log("Raw data first few rows:", rawData.slice(0, 3));
+  if (rawData.length < 1) return [];
 
-  if (rawData.length < 1) {
-    return [];
-  }
-
-  // Check multiple rows to find the best header row
+  // pick header row
   let headerRowIndex = 0;
-
   for (let i = 0; i < Math.min(3, rawData.length); i++) {
     const row = (rawData[i] ?? []) as unknown[];
     const nonNullCount = row.filter((cell) => cell !== null && cell !== undefined && cell !== "").length;
 
     const hasRealHeaders = row.some((cell) => {
-      const cellStr = String(cell ?? "").toLowerCase();
-      return (
-        cellStr.includes("meter") ||
-        cellStr.includes("date") ||
-        cellStr.includes("energy") ||
-        cellStr.includes("usage") ||
-        cellStr.includes("point") ||
-        cellStr.includes("asset")
-      );
+      const s = String(cell ?? "").toLowerCase();
+      return s.includes("meter") || s.includes("date") || s.includes("energy") || s.includes("usage") || s.includes("point") || s.includes("asset");
     });
 
-    // Check if this row contains generic placeholders
     const hasGenericHeaders = row.some((cell) => {
-      const cellStr = String(cell ?? "").toLowerCase();
-      return cellStr === "device" || cellStr === "column" || cellStr === "field" || cellStr === "daily profile";
+      const s = String(cell ?? "").toLowerCase();
+      return s === "device" || s === "column" || s === "field" || s === "daily profile";
     });
 
     console.log(`Row ${i}: nonNull=${nonNullCount}, hasRealHeaders=${hasRealHeaders}, hasGeneric=${hasGenericHeaders}`);
-
-    // Use this row as headers if it has real headers and good coverage
     if (hasRealHeaders && nonNullCount > 2 && !hasGenericHeaders) {
       headerRowIndex = i;
       console.log(`Selected row ${i} as header row`);
@@ -93,12 +75,10 @@ function workbookToJsonFromBuffer(buf: ArrayBuffer): SheetRow[] {
 
   const headers: string[] = (rawData[headerRowIndex] as unknown[]).map((v) => String(v ?? ""));
   const dataRows = rawData.slice(headerRowIndex + 1) as unknown[][];
-
   console.log(`Using row ${headerRowIndex} as headers`);
   console.log("Final headers:", headers);
   console.log("Data rows count:", dataRows.length);
 
-  // Convert data rows to objects
   const result: SheetRow[] = dataRows.map((row) => {
     const obj: SheetRow = {};
     headers.forEach((header, index) => {
@@ -108,7 +88,6 @@ function workbookToJsonFromBuffer(buf: ArrayBuffer): SheetRow[] {
     return obj;
   });
 
-  // Filter out completely empty rows
   return result.filter((row) => Object.values(row).some((v) => v !== null && v !== "" && v !== undefined));
 }
 
@@ -136,7 +115,6 @@ export async function POST(req: Request) {
     if (!Array.isArray(readings) || readings.length === 0) {
       return NextResponse.json({ error: "Readings file is empty or could not be parsed." }, { status: 400 });
     }
-
     if (!Array.isArray(mapping) || mapping.length === 0) {
       return NextResponse.json({ error: "Mapping file is empty or could not be parsed." }, { status: 400 });
     }
@@ -151,15 +129,12 @@ export async function POST(req: Request) {
     console.log("Sample mapping row:", sampleMapRow);
     console.log("Sample readings row:", readingsSample);
 
-    // --- Determine usage key ---
+    // Usage key in mapping
     let usageKey: string | null = usageKeyOverride;
-
     if (!usageKey) {
-      // Look for Usage Point No. in headers
       const usageTokens = ["usagepointno", "usagepoint", "usage", "point", "location", "usageno"];
       usageKey = findKeyByNormalizedTokens(mappingHeaders, usageTokens);
     }
-
     if (!usageKey) {
       return NextResponse.json(
         {
@@ -172,111 +147,66 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-
     console.log("Using usage key:", usageKey);
 
-    // --- Determine join (meter) key in mapping file ---
+    // Meter key in mapping
     let mapMeterKey: string | null = joinKeyOverride;
-
     if (!mapMeterKey) {
-      // Try to find meter-related columns
-      const meterTokens = [
-        "meterno",
-        "masterno",
-        "meternumber",
-        "meterid",
-        "meterserial",
-        "serialnumber",
-        "serialno",
-        "serial",
-        "id",
-        "identifier",
-        "meter",
-      ];
-
+      const meterTokens = ["meterno", "masterno", "meternumber", "meterid", "meterserial", "serialnumber", "serialno", "serial", "id", "identifier", "meter"];
       mapMeterKey = findKeyByNormalizedTokens(mappingHeaders, meterTokens);
     }
-
-    // Fallback to first column that might contain IDs
     if (!mapMeterKey) {
-      mapMeterKey =
-        mappingHeaders.find((h) => {
-          const k = normalizeHeaderKey(h);
-          return k.includes("no") || k.includes("id") || k.includes("number");
-        }) || mappingHeaders[0];
+      mapMeterKey = mappingHeaders.find((h) => {
+        const k = normalizeHeaderKey(h);
+        return k.includes("no") || k.includes("id") || k.includes("number");
+      }) || mappingHeaders[0];
     }
-
     if (!mapMeterKey) {
       return NextResponse.json(
-        {
-          error: "Could not determine meter join column in mapping file.",
-          detectedHeaders: mappingHeaders,
-          sampleRow: sampleMapRow,
-        },
+        { error: "Could not determine meter join column in mapping file.", detectedHeaders: mappingHeaders, sampleRow: sampleMapRow },
         { status: 400 }
       );
     }
-
     console.log("Using mapping meter key:", mapMeterKey);
 
-    // --- Determine the meter key in readings file ---
+    // Meter key in readings
     let readingsMeterKey: string | null = null;
-    const readingsMeterTokens = ["meterno", "masterno", "meterid", "serial", "id", "identifier", "meter"];
-
-    readingsMeterKey = findKeyByNormalizedTokens(readingsHeaders, readingsMeterTokens);
-
-    // Fallback strategies
+    readingsMeterKey = findKeyByNormalizedTokens(readingsHeaders, ["meterno", "masterno", "meterid", "serial", "id", "identifier", "meter"]);
     if (!readingsMeterKey) {
       readingsMeterKey = readingsHeaders.find((h) => {
         const k = normalizeHeaderKey(h);
         return k.includes("no") || k.includes("id") || k.includes("number");
       })!;
     }
-
-    // Last resort - use first column
-    if (!readingsMeterKey) {
-      readingsMeterKey = readingsHeaders[0];
-    }
-
+    if (!readingsMeterKey) readingsMeterKey = readingsHeaders[0];
     if (!readingsMeterKey) {
       return NextResponse.json(
-        {
-          error: "Could not determine meter column in readings file.",
-          detectedHeaders: readingsHeaders,
-          sampleRow: readingsSample,
-        },
+        { error: "Could not determine meter column in readings file.", detectedHeaders: readingsHeaders, sampleRow: readingsSample },
         { status: 400 }
       );
     }
-
     console.log("Using readings meter key:", readingsMeterKey);
 
-    // --- Build lookup map ---
+    // Build mapping
     const map = new Map<string, string>();
     let mappingProcessed = 0;
     let mappingSkipped = 0;
-
     for (const row of mapping) {
       const rawVal = row[mapMeterKey] as unknown;
       const usageVal = row[usageKey] as unknown;
-
       if (rawVal === null || rawVal === undefined || rawVal === "" || usageVal === null || usageVal === undefined || usageVal === "") {
         mappingSkipped++;
         continue;
       }
-
-      // Normalize the meter key for consistent matching
       const normalizedKey = String(rawVal).trim().toLowerCase();
       const normalizedUsage = String(usageVal).trim();
-
       map.set(normalizedKey, normalizedUsage);
       mappingProcessed++;
     }
-
     console.log(`Mapping processed: ${mappingProcessed}, skipped: ${mappingSkipped}`);
     console.log("Sample mapping entries:", Array.from(map.entries()).slice(0, 5));
 
-    // --- Merge readings with Usage Point No. ---
+    // Merge
     const USAGE_OUTPUT_HEADER = "Usage Point No.";
     let foundCount = 0;
     let notFoundCount = 0;
@@ -285,54 +215,34 @@ export async function POST(req: Request) {
       const val = r[readingsMeterKey as string] as unknown;
       const normalizedVal = val ? String(val).trim().toLowerCase() : "";
       const usage = normalizedVal && map.has(normalizedVal) ? (map.get(normalizedVal) as string) : "NOT FOUND";
-
-      if (usage === "NOT FOUND") {
-        notFoundCount++;
-      } else {
-        foundCount++;
-      }
-
-      // Create a new object with ALL original readings data plus the new Usage Point column
-      const mergedRow: SheetRow = { ...r };
-      mergedRow[USAGE_OUTPUT_HEADER] = usage;
-      return mergedRow;
+      if (usage === "NOT FOUND") notFoundCount++; else foundCount++;
+      return { ...r, [USAGE_OUTPUT_HEADER]: usage };
     });
 
     console.log(`Merge results: ${foundCount} found, ${notFoundCount} not found`);
+    console.log("Sample readings meter values:", readings.slice(0, 5).map((r) => r[readingsMeterKey as string]));
+    console.log("Sample mapping keys:", Array.from(map.keys()).slice(0, 5));
 
-    // Show some examples of what we're trying to match
-    const readingsSample5 = readings.slice(0, 5).map((r) => r[readingsMeterKey as string]);
-    const mappingKeys5 = Array.from(map.keys()).slice(0, 5);
+    // --- Output Excel ---
+    const outWb = XLSX.utils.book_new();
+    const outSheet = XLSX.utils.json_to_sheet(merged);
+    XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
 
-    console.log("Sample readings meter values:", readingsSample5);
-    console.log("Sample mapping keys:", mappingKeys5);
+    const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 
-   // --- Output Excel ---
-const outWb = XLSX.utils.book_new();
-const outSheet = XLSX.utils.json_to_sheet(merged);
-XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
+    // Make a clean ArrayBuffer (no SharedArrayBuffer typing issues)
+    const outAb: ArrayBuffer = outArray.buffer.slice(outArray.byteOffset, outArray.byteOffset + outArray.byteLength);
 
-const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
+    responseHeaders.set("Cache-Control", "no-store");
 
-const responseHeaders = new Headers();
-responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
-
-// ✅ Wrap in Blob to satisfy BodyInit and be runtime-agnostic
-const outBlob = new Blob([outArray], {
-  type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-});
-
-return new Response(outBlob, { status: 200, headers: responseHeaders });
-
+    return new Response(outAb, { status: 200, headers: responseHeaders });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal error";
     const stack = err instanceof Error ? err.stack : undefined;
     console.error("merge error:", err);
     return NextResponse.json({ error: message, stack }, { status: 500 });
   }
-
-
-
-  
 }

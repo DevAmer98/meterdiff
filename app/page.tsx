@@ -167,7 +167,7 @@ export default function Home() {
           <div
             className="pointer-events-none absolute inset-0 -z-0 flex items-center justify-center"
             style={{
-              backgroundImage: `url('/image.png')`,
+              backgroundImage: `url('/')`,
               backgroundRepeat: "no-repeat",
               backgroundPosition: "center",
               backgroundSize: "contain",

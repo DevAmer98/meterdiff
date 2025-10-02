@@ -156,10 +156,11 @@ export async function POST(req: Request) {
       mapMeterKey = findKeyByNormalizedTokens(mappingHeaders, meterTokens);
     }
     if (!mapMeterKey) {
-      mapMeterKey = mappingHeaders.find((h) => {
-        const k = normalizeHeaderKey(h);
-        return k.includes("no") || k.includes("id") || k.includes("number");
-      }) || mappingHeaders[0];
+      mapMeterKey =
+        mappingHeaders.find((h) => {
+          const k = normalizeHeaderKey(h);
+          return k.includes("no") || k.includes("id") || k.includes("number");
+        }) || mappingHeaders[0];
     }
     if (!mapMeterKey) {
       return NextResponse.json(
@@ -223,32 +224,24 @@ export async function POST(req: Request) {
     console.log("Sample readings meter values:", readings.slice(0, 5).map((r) => r[readingsMeterKey as string]));
     console.log("Sample mapping keys:", Array.from(map.keys()).slice(0, 5));
 
+    // --- Output Excel ---
+    const outWb = XLSX.utils.book_new();
+    const outSheet = XLSX.utils.json_to_sheet(merged);
+    XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
 
-   // --- Output Excel ---
-const outWb = XLSX.utils.book_new();
-const outSheet = XLSX.utils.json_to_sheet(merged);
-XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
+    // Write as Node Buffer for correctness
+    const buf = XLSX.write(outWb, { bookType: "xlsx", type: "buffer" }) as Buffer;
 
-// ✅ Produce a Node Buffer for reliability on the Node.js runtime
-// Option A (preferred): write directly as 'buffer'
-const outBuffer = XLSX.write(outWb, { bookType: "xlsx", type: "buffer" }) as Buffer;
+    // Convert Buffer -> pure ArrayBuffer (BodyInit-compatible, keeps bytes intact)
+    const outAb = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 
-// (If your TS config complains about Buffer types, you can instead do:)
-// const tmp = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
-// const outBuffer = Buffer.from(tmp);
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    responseHeaders.set("Content-Disposition", 'attachment; filename="meter_merge.xlsx"');
+    responseHeaders.set("Cache-Control", "no-store");
+    responseHeaders.set("Content-Length", String(buf.length));
 
-const responseHeaders = new Headers();
-responseHeaders.set(
-  "Content-Type",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-);
-responseHeaders.set("Content-Disposition", 'attachment; filename="meter_merge.xlsx"');
-responseHeaders.set("Cache-Control", "no-store");
-// (Optional) send a Content-Length for some proxies/clients:
-responseHeaders.set("Content-Length", String(outBuffer.length));
-
-return new Response(outBuffer, { status: 200, headers: responseHeaders });
-
+    return new Response(outAb, { status: 200, headers: responseHeaders });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal error";
     const stack = err instanceof Error ? err.stack : undefined;

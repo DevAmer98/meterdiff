@@ -223,22 +223,24 @@ export async function POST(req: Request) {
     console.log("Sample readings meter values:", readings.slice(0, 5).map((r) => r[readingsMeterKey as string]));
     console.log("Sample mapping keys:", Array.from(map.keys()).slice(0, 5));
 
+
     // --- Output Excel ---
-    const outWb = XLSX.utils.book_new();
-    const outSheet = XLSX.utils.json_to_sheet(merged);
-    XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
+const outWb = XLSX.utils.book_new();
+const outSheet = XLSX.utils.json_to_sheet(merged);
+XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
 
-    const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
+const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 
-    // Make a clean ArrayBuffer (no SharedArrayBuffer typing issues)
-    const outAb: ArrayBuffer = outArray.buffer.slice(outArray.byteOffset, outArray.byteOffset + outArray.byteLength);
+// ✅ Allocate a fresh ArrayBuffer and copy bytes -> guaranteed 'ArrayBuffer' type
+const outAb = new ArrayBuffer(outArray.byteLength);
+new Uint8Array(outAb).set(outArray);
 
-    const responseHeaders = new Headers();
-    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
-    responseHeaders.set("Cache-Control", "no-store");
+const responseHeaders = new Headers();
+responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
+responseHeaders.set("Cache-Control", "no-store");
 
-    return new Response(outAb, { status: 200, headers: responseHeaders });
+return new Response(outAb, { status: 200, headers: responseHeaders });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal error";
     const stack = err instanceof Error ? err.stack : undefined;

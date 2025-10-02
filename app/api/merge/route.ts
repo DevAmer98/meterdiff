@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import * as XLSX from "xlsx";
 
-function normalizeHeaderKey(h: any) {
+type SheetRow = Record<string, unknown>;
+
+function normalizeHeaderKey(h: unknown): string {
   return String(h ?? "")
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "") // strip diacritics
@@ -10,41 +12,43 @@ function normalizeHeaderKey(h: any) {
     .toLowerCase();
 }
 
-function findKeyByNormalizedTokens(headers: string[], tokens: string[]) {
+function findKeyByNormalizedTokens(headers: string[], tokens: string[]): string | null {
   const normalizedList = headers.map((h) => ({ orig: h, norm: normalizeHeaderKey(h) }));
-  
+
   console.log("Searching in headers:", normalizedList);
-  console.log("Looking for tokens:", tokens);
-  
+  console.log("Looking for tokens (raw):", tokens);
+
+  // Normalize tokens once
+  const normTokens = tokens.map((t) => normalizeHeaderKey(t));
+
   // exact token match
-  for (const t of tokens) {
+  for (const t of normTokens) {
     const found = normalizedList.find((h) => h.norm === t);
     if (found) {
       console.log(`Found exact match: ${found.orig} (normalized: ${found.norm}) for token: ${t}`);
       return found.orig;
     }
   }
-  
+
   // substring match
-  for (const t of tokens) {
+  for (const t of normTokens) {
     const found = normalizedList.find((h) => h.norm.includes(t));
     if (found) {
       console.log(`Found substring match: ${found.orig} (normalized: ${found.norm}) for token: ${t}`);
       return found.orig;
     }
   }
-  
+
   return null;
 }
 
 // --- Convert workbook to JSON with proper header detection ---
-function workbookToJsonFromBuffer(buf: ArrayBuffer) {
+function workbookToJsonFromBuffer(buf: ArrayBuffer): SheetRow[] {
   const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
 
   // First, get the raw data to inspect the structure
-  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
-  const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+  const rawData = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null }) as unknown[][];
 
   console.log("Raw data first few rows:", rawData.slice(0, 3));
 
@@ -52,30 +56,33 @@ function workbookToJsonFromBuffer(buf: ArrayBuffer) {
     return [];
   }
 
-  let headers: string[];
-  let dataRows: any[][];
-
   // Check multiple rows to find the best header row
   let headerRowIndex = 0;
-  
+
   for (let i = 0; i < Math.min(3, rawData.length); i++) {
-    const row = rawData[i] as any[];
-    const nonNullCount = row.filter(cell => cell !== null && cell !== undefined && cell !== '').length;
+    const row = (rawData[i] ?? []) as unknown[];
+    const nonNullCount = row.filter((cell) => cell !== null && cell !== undefined && cell !== "").length;
+
     const hasRealHeaders = row.some((cell) => {
-      const cellStr = String(cell || '').toLowerCase();
-      return cellStr.includes('meter') || cellStr.includes('date') || cellStr.includes('energy') || 
-             cellStr.includes('usage') || cellStr.includes('point') || cellStr.includes('asset');
+      const cellStr = String(cell ?? "").toLowerCase();
+      return (
+        cellStr.includes("meter") ||
+        cellStr.includes("date") ||
+        cellStr.includes("energy") ||
+        cellStr.includes("usage") ||
+        cellStr.includes("point") ||
+        cellStr.includes("asset")
+      );
     });
-    
+
     // Check if this row contains generic placeholders
     const hasGenericHeaders = row.some((cell) => {
-      const cellStr = String(cell || '').toLowerCase();
-      return cellStr === 'device' || cellStr === 'column' || cellStr === 'field' || 
-             cellStr === 'daily profile';
+      const cellStr = String(cell ?? "").toLowerCase();
+      return cellStr === "device" || cellStr === "column" || cellStr === "field" || cellStr === "daily profile";
     });
-    
+
     console.log(`Row ${i}: nonNull=${nonNullCount}, hasRealHeaders=${hasRealHeaders}, hasGeneric=${hasGenericHeaders}`);
-    
+
     // Use this row as headers if it has real headers and good coverage
     if (hasRealHeaders && nonNullCount > 2 && !hasGenericHeaders) {
       headerRowIndex = i;
@@ -84,26 +91,25 @@ function workbookToJsonFromBuffer(buf: ArrayBuffer) {
     }
   }
 
-  headers = (rawData[headerRowIndex] as any[]).map(String);
-  dataRows = rawData.slice(headerRowIndex + 1);
-  
+  const headers: string[] = (rawData[headerRowIndex] as unknown[]).map((v) => String(v ?? ""));
+  const dataRows = rawData.slice(headerRowIndex + 1) as unknown[][];
+
   console.log(`Using row ${headerRowIndex} as headers`);
   console.log("Final headers:", headers);
   console.log("Data rows count:", dataRows.length);
 
   // Convert data rows to objects
-  const result = dataRows.map(row => {
-    const obj: Record<string, any> = {};
+  const result: SheetRow[] = dataRows.map((row) => {
+    const obj: SheetRow = {};
     headers.forEach((header, index) => {
-      obj[header] = row[index] !== undefined ? row[index] : null;
+      const val = (row as unknown[])[index];
+      obj[header] = val !== undefined ? val : null;
     });
     return obj;
   });
 
   // Filter out completely empty rows
-  return result.filter(row =>
-    Object.values(row).some(v => v !== null && v !== "" && v !== undefined)
-  );
+  return result.filter((row) => Object.values(row).some((v) => v !== null && v !== "" && v !== undefined));
 }
 
 export async function POST(req: Request) {
@@ -111,8 +117,8 @@ export async function POST(req: Request) {
     const form = await req.formData();
     const f1 = form.get("file1") as File | null;
     const f2 = form.get("file2") as File | null;
-    const usageKeyOverride = form.get("usageKey") as string | null;
-    const joinKeyOverride = form.get("joinKey") as string | null;
+    const usageKeyOverride = (form.get("usageKey") as string | null) || null;
+    const joinKeyOverride = (form.get("joinKey") as string | null) || null;
 
     if (!f1 || !f2) {
       return NextResponse.json({ error: "Both files are required (file1 and file2)." }, { status: 400 });
@@ -135,9 +141,9 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Mapping file is empty or could not be parsed." }, { status: 400 });
     }
 
-    const sampleMapRow = mapping[0] || {};
+    const sampleMapRow: SheetRow = mapping[0] || {};
     const mappingHeaders = Object.keys(sampleMapRow);
-    const readingsSample = readings[0] || {};
+    const readingsSample: SheetRow = readings[0] || {};
     const readingsHeaders = Object.keys(readingsSample);
 
     console.log("Mapping headers:", mappingHeaders);
@@ -146,76 +152,85 @@ export async function POST(req: Request) {
     console.log("Sample readings row:", readingsSample);
 
     // --- Determine usage key ---
-    let usageKey: string | null = usageKeyOverride || null;
-    
+    let usageKey: string | null = usageKeyOverride;
+
     if (!usageKey) {
       // Look for Usage Point No. in headers
-      const usageTokens = [
-        "usagepointno", "usagepoint", "usage", "point", "location", "usageno"
-      ];
-      
+      const usageTokens = ["usagepointno", "usagepoint", "usage", "point", "location", "usageno"];
       usageKey = findKeyByNormalizedTokens(mappingHeaders, usageTokens);
     }
 
     if (!usageKey) {
-      return NextResponse.json({ 
-        error: "Could not find Usage Point column in mapping file.",
-        detectedHeaders: mappingHeaders,
-        sampleRow: sampleMapRow,
-        suggestion: "The mapping file should contain a 'Usage Point No.' column or similar. You can specify it manually using the form field."
-      }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: "Could not find Usage Point column in mapping file.",
+          detectedHeaders: mappingHeaders,
+          sampleRow: sampleMapRow,
+          suggestion:
+            "The mapping file should contain a 'Usage Point No.' column or similar. You can specify it manually using the form field.",
+        },
+        { status: 400 }
+      );
     }
 
     console.log("Using usage key:", usageKey);
 
     // --- Determine join (meter) key in mapping file ---
-    let mapMeterKey: string | null = joinKeyOverride || null;
-    
+    let mapMeterKey: string | null = joinKeyOverride;
+
     if (!mapMeterKey) {
       // Try to find meter-related columns
       const meterTokens = [
-        "meterno", "masterno", "meternumber", "meterid", "meterserial", 
-        "serialnumber", "serialno", "serial", "id", "identifier", "meter"
+        "meterno",
+        "masterno",
+        "meternumber",
+        "meterid",
+        "meterserial",
+        "serialnumber",
+        "serialno",
+        "serial",
+        "id",
+        "identifier",
+        "meter",
       ];
-      
+
       mapMeterKey = findKeyByNormalizedTokens(mappingHeaders, meterTokens);
     }
 
     // Fallback to first column that might contain IDs
     if (!mapMeterKey) {
-      mapMeterKey = mappingHeaders.find(h => 
-        normalizeHeaderKey(h).includes("no") || 
-        normalizeHeaderKey(h).includes("id") ||
-        normalizeHeaderKey(h).includes("number")
-      ) || mappingHeaders[0];
+      mapMeterKey =
+        mappingHeaders.find((h) => {
+          const k = normalizeHeaderKey(h);
+          return k.includes("no") || k.includes("id") || k.includes("number");
+        }) || mappingHeaders[0];
     }
 
     if (!mapMeterKey) {
-      return NextResponse.json({ 
-        error: "Could not determine meter join column in mapping file.",
-        detectedHeaders: mappingHeaders,
-        sampleRow: sampleMapRow
-      }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: "Could not determine meter join column in mapping file.",
+          detectedHeaders: mappingHeaders,
+          sampleRow: sampleMapRow,
+        },
+        { status: 400 }
+      );
     }
 
     console.log("Using mapping meter key:", mapMeterKey);
 
     // --- Determine the meter key in readings file ---
     let readingsMeterKey: string | null = null;
-    const readingsMeterTokens = [
-      "meterno", "masterno", "meterid", "serial", "id", "identifier", "meter"
-    ];
-    
+    const readingsMeterTokens = ["meterno", "masterno", "meterid", "serial", "id", "identifier", "meter"];
+
     readingsMeterKey = findKeyByNormalizedTokens(readingsHeaders, readingsMeterTokens);
 
     // Fallback strategies
     if (!readingsMeterKey) {
-      // Look for columns with "no" or "id" in the name
-      readingsMeterKey = readingsHeaders.find(h => 
-        normalizeHeaderKey(h).includes("no") || 
-        normalizeHeaderKey(h).includes("id") ||
-        normalizeHeaderKey(h).includes("number")
-      );
+      readingsMeterKey = readingsHeaders.find((h) => {
+        const k = normalizeHeaderKey(h);
+        return k.includes("no") || k.includes("id") || k.includes("number");
+      })!;
     }
 
     // Last resort - use first column
@@ -224,11 +239,14 @@ export async function POST(req: Request) {
     }
 
     if (!readingsMeterKey) {
-      return NextResponse.json({ 
-        error: "Could not determine meter column in readings file.",
-        detectedHeaders: readingsHeaders,
-        sampleRow: readingsSample
-      }, { status: 400 });
+      return NextResponse.json(
+        {
+          error: "Could not determine meter column in readings file.",
+          detectedHeaders: readingsHeaders,
+          sampleRow: readingsSample,
+        },
+        { status: 400 }
+      );
     }
 
     console.log("Using readings meter key:", readingsMeterKey);
@@ -239,18 +257,18 @@ export async function POST(req: Request) {
     let mappingSkipped = 0;
 
     for (const row of mapping) {
-      const rawVal = row[mapMeterKey];
-      const usageVal = row[usageKey];
-      
-      if (!rawVal || !usageVal) {
+      const rawVal = row[mapMeterKey] as unknown;
+      const usageVal = row[usageKey] as unknown;
+
+      if (rawVal === null || rawVal === undefined || rawVal === "" || usageVal === null || usageVal === undefined || usageVal === "") {
         mappingSkipped++;
         continue;
       }
-      
+
       // Normalize the meter key for consistent matching
       const normalizedKey = String(rawVal).trim().toLowerCase();
       const normalizedUsage = String(usageVal).trim();
-      
+
       map.set(normalizedKey, normalizedUsage);
       mappingProcessed++;
     }
@@ -263,19 +281,19 @@ export async function POST(req: Request) {
     let foundCount = 0;
     let notFoundCount = 0;
 
-    const merged = readings.map(r => {
-      const val = r[readingsMeterKey!];
+    const merged: SheetRow[] = readings.map((r) => {
+      const val = r[readingsMeterKey as string] as unknown;
       const normalizedVal = val ? String(val).trim().toLowerCase() : "";
-      const usage = normalizedVal && map.has(normalizedVal) ? map.get(normalizedVal)! : "NOT FOUND";
-      
+      const usage = normalizedVal && map.has(normalizedVal) ? (map.get(normalizedVal) as string) : "NOT FOUND";
+
       if (usage === "NOT FOUND") {
         notFoundCount++;
       } else {
         foundCount++;
       }
-      
+
       // Create a new object with ALL original readings data plus the new Usage Point column
-      const mergedRow = { ...r };
+      const mergedRow: SheetRow = { ...r };
       mergedRow[USAGE_OUTPUT_HEADER] = usage;
       return mergedRow;
     });
@@ -283,9 +301,9 @@ export async function POST(req: Request) {
     console.log(`Merge results: ${foundCount} found, ${notFoundCount} not found`);
 
     // Show some examples of what we're trying to match
-    const readingsSample5 = readings.slice(0, 5).map(r => r[readingsMeterKey!]);
+    const readingsSample5 = readings.slice(0, 5).map((r) => r[readingsMeterKey as string]);
     const mappingKeys5 = Array.from(map.keys()).slice(0, 5);
-    
+
     console.log("Sample readings meter values:", readingsSample5);
     console.log("Sample mapping keys:", mappingKeys5);
 
@@ -293,19 +311,18 @@ export async function POST(req: Request) {
     const outWb = XLSX.utils.book_new();
     const outSheet = XLSX.utils.json_to_sheet(merged);
     XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
-    
+
     const outArray = XLSX.write(outWb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 
-    const headers = new Headers();
-    headers.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    headers.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
+    const responseHeaders = new Headers();
+    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    responseHeaders.set("Content-Disposition", `attachment; filename="meter_merge.xlsx"`);
 
-    return new Response(outArray, { status: 200, headers });
-  } catch (err: any) {
+    return new Response(outArray, { status: 200, headers: responseHeaders });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Internal error";
+    const stack = err instanceof Error ? err.stack : undefined;
     console.error("merge error:", err);
-    return NextResponse.json({ 
-      error: err?.message ?? "Internal error",
-      stack: err?.stack
-    }, { status: 500 });
+    return NextResponse.json({ error: message, stack }, { status: 500 });
   }
 }

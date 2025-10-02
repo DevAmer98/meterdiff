@@ -1,10 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Upload, FileSpreadsheet, X, Loader2, Download, Clock } from "lucide-react";
+import {
+  Upload,
+  FileSpreadsheet,
+  X,
+  Loader2,
+  Download,
+  Clock,
+} from "lucide-react";
 import clsx from "clsx";
 
 type DropState = "idle" | "over1" | "over2";
+type Mode = "diff" | "merge";
 
 function formatDeadlineForRiyadh(d: Date) {
   return d.toLocaleString("en-GB", {
@@ -24,7 +32,9 @@ function formatCountdown(ms: number) {
   const hours = Math.floor((s % (60 * 60 * 24)) / (60 * 60));
   const minutes = Math.floor((s % (60 * 60)) / 60);
   const seconds = s % 60;
-  return `${String(days).padStart(2, "0")}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+  return `${String(days).padStart(2, "0")}d ${String(hours).padStart(2, "0")}h ${String(
+    minutes
+  ).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 export default function Home() {
@@ -34,6 +44,11 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [dropState, setDropState] = useState<DropState>("idle");
+  const [mode, setMode] = useState<Mode>("diff"); // NEW: mode toggle
+
+  // optional overrides from user
+  const [clientUsageKey, setClientUsageKey] = useState<string>("");
+  const [clientJoinKey, setClientJoinKey] = useState<string>("");
 
   // --- Deadline: one year from now ---
   const initialNow = useMemo(() => new Date(), []);
@@ -86,16 +101,45 @@ export default function Home() {
     setBusy(true);
     try {
       const fd = new FormData();
+      // file1: readings (or left input), file2: second file (diff target or locations)
       fd.append("file1", file1);
       fd.append("file2", file2);
+      // include mode so server can fallback if needed (optional)
+      fd.append("mode", mode);
 
-      const res = await fetch("api/diff", { method: "POST", body: fd });
+      // include overrides if provided
+      fd.append("usageKey", clientUsageKey ?? "");
+      fd.append("joinKey", clientJoinKey ?? "");
+
+      const endpoint = mode === "diff" ? "/api/diff" : "/api/merge";
+      const res = await fetch(endpoint, { method: "POST", body: fd });
+
       if (!res.ok) {
+        // try parse JSON response (server returns helpful debug JSON)
         let msg = `Request failed (${res.status})`;
         try {
           const data = await res.json();
-          if (data?.error) msg = data.error;
-        } catch {}
+          if (data?.error) {
+            msg = data.error;
+            // include detected headers & sampleRow if present (trim to reasonable length)
+            if (data.detectedHeaders) {
+              msg += `\n\nDetected headers (mapping file):\n${JSON.stringify(
+                data.detectedHeaders,
+                null,
+                2
+              ).slice(0, 2000)}`;
+            }
+            if (data.sampleRow) {
+              msg += `\n\nSample mapping row:\n${JSON.stringify(data.sampleRow, null, 2).slice(0, 2000)}`;
+            }
+          } else {
+            // fallback: non-json body
+            const txt = await res.text();
+            if (txt) msg += `\n\n${txt.slice(0, 2000)}`;
+          }
+        } catch (err) {
+          // ignore parse error
+        }
         throw new Error(msg);
       }
 
@@ -116,6 +160,16 @@ export default function Home() {
       setBusy(false);
     }
   }
+
+  // helper text that changes with mode
+  const headerTitle = mode === "diff" ? "Meter Diff" : "Meter Merge";
+  const headerDescription =
+    mode === "diff"
+      ? "Upload two Excel files containing meter_id and value. We’ll aggregate by meter and generate a results workbook."
+      : "Upload a readings Excel (meter serials + readings) and a locations Excel (meter serial <-> location). We’ll merge by meter_id and return readings with location.";
+
+  const submitLabel = busy ? "Processing..." : isExpired ? "Deadline passed" : mode === "diff" ? "Compute & Download" : "Merge & Download";
+  const downloadFilename = mode === "diff" ? "meter_diff.xlsx" : "meter_merge.xlsx";
 
   return (
     <main className="relative min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-black text-zinc-100">
@@ -140,14 +194,35 @@ export default function Home() {
           <div className="relative z-10">
             <header className="mb-6 flex items-start justify-between gap-4">
               <div>
-                <h1 className="text-3xl font-semibold tracking-tight">Meter Diff</h1>
-                <p className="mt-2 text-sm text-zinc-400">
-                  Upload two Excel files containing <code>meter_id</code> and <code>value</code>. We’ll
-                  aggregate by meter and generate a results workbook.
-                </p>
+                <h1 className="text-3xl font-semibold tracking-tight">{headerTitle}</h1>
+                <p className="mt-2 text-sm text-zinc-400">{headerDescription}</p>
               </div>
 
               <div className="ml-4 flex flex-col items-end">
+                {/* Mode toggle */}
+                <div className="mb-3 inline-flex rounded-full bg-white/5 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setMode("diff")}
+                    className={clsx(
+                      "rounded-full px-3 py-1 text-xs font-medium transition",
+                      mode === "diff" ? "bg-white text-black" : "text-zinc-300 hover:bg-white/5"
+                    )}
+                  >
+                    Diff
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("merge")}
+                    className={clsx(
+                      "rounded-full px-3 py-1 text-xs font-medium transition",
+                      mode === "merge" ? "bg-white text-black" : "text-zinc-300 hover:bg-white/5"
+                    )}
+                  >
+                    Merge
+                  </button>
+                </div>
+
                 <div
                   className={clsx(
                     "inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium",
@@ -172,7 +247,9 @@ export default function Home() {
             <form onSubmit={onSubmit} className="space-y-6">
               {/* file 1 */}
               <div>
-                <label className="mb-2 block text-sm font-medium text-zinc-300">File 1</label>
+                <label className="mb-2 block text-sm font-medium text-zinc-300">
+                  {mode === "diff" ? "File 1 (base / older)" : "File 1 (readings)"}
+                </label>
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -194,12 +271,7 @@ export default function Home() {
                         Drag & drop Excel here, or{" "}
                         <label className="cursor-pointer underline decoration-dotted underline-offset-4">
                           <span>
-                            <input
-                              type="file"
-                              accept=".xlsx,.xls"
-                              className="hidden"
-                              onChange={(e) => onFilesPicked(1, e.target.files)}
-                            />
+                            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => onFilesPicked(1, e.target.files)} />
                             browse
                           </span>
                         </label>
@@ -231,7 +303,9 @@ export default function Home() {
 
               {/* file 2 */}
               <div>
-                <label className="mb-2 block text-sm font-medium text-zinc-300">File 2</label>
+                <label className="mb-2 block text-sm font-medium text-zinc-300">
+                  {mode === "diff" ? "File 2 (newer / compare to)" : "File 2 (locations mapping)"}
+                </label>
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
@@ -253,17 +327,14 @@ export default function Home() {
                         Drag & drop Excel here, or{" "}
                         <label className="cursor-pointer underline decoration-dotted underline-offset-4">
                           <span>
-                            <input
-                              type="file"
-                              accept=".xlsx,.xls"
-                              className="hidden"
-                              onChange={(e) => onFilesPicked(2, e.target.files)}
-                            />
+                            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => onFilesPicked(2, e.target.files)} />
                             browse
                           </span>
                         </label>
                       </p>
-                      <p className="text-xs text-zinc-500">Accepted: .xlsx, .xls</p>
+                      <p className="text-xs text-zinc-500">
+                        {mode === "diff" ? "Accepted: .xlsx, .xls" : "Should contain meter serial/ID and location columns (e.g. meter_id, location)."}
+                      </p>
                     </div>
                   </div>
 
@@ -288,6 +359,8 @@ export default function Home() {
                 </div>
               </div>
 
+  
+
               {/* actions */}
               <div className="flex items-center gap-3 pt-2">
                 <button
@@ -301,7 +374,7 @@ export default function Home() {
                   )}
                 >
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-                  {busy ? "Processing..." : isExpired ? "Deadline passed" : "Compute & Download"}
+                  {submitLabel}
                 </button>
 
                 {(file1 || file2) && (
@@ -312,6 +385,8 @@ export default function Home() {
                       setFile2(null);
                       setDownloadUrl(null);
                       setError(null);
+                      setClientJoinKey("");
+                      setClientUsageKey("");
                     }}
                     className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-white/10"
                   >
@@ -321,9 +396,9 @@ export default function Home() {
               </div>
 
               {error && (
-                <p className="rounded-xl border border-red-900/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
+                <pre className="rounded-xl border border-red-900/40 bg-red-900/20 px-3 py-2 text-sm text-red-200 whitespace-pre-wrap">
                   {error}
-                </p>
+                </pre>
               )}
             </form>
 
@@ -331,11 +406,11 @@ export default function Home() {
               <div className="mt-6">
                 <a
                   href={downloadUrl}
-                  download="meter_diff.xlsx"
+                  download={downloadFilename}
                   className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-4 py-2 text-emerald-200 hover:bg-emerald-400/20"
                 >
                   <Download className="h-4 w-4" />
-                  Download result (meter_diff.xlsx)
+                  Download result ({downloadFilename})
                 </a>
               </div>
             )}

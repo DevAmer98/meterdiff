@@ -224,24 +224,27 @@ export async function POST(req: Request) {
     console.log("Sample readings meter values:", readings.slice(0, 5).map((r) => r[readingsMeterKey as string]));
     console.log("Sample mapping keys:", Array.from(map.keys()).slice(0, 5));
 
-    // --- Output Excel ---
-    const outWb = XLSX.utils.book_new();
-    const outSheet = XLSX.utils.json_to_sheet(merged);
-    XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
+  // --- Output Excel ---
+const outWb = XLSX.utils.book_new();
+const outSheet = XLSX.utils.json_to_sheet(merged);
+XLSX.utils.book_append_sheet(outWb, outSheet, "merged");
 
-    // Write as Node Buffer for correctness
-    const buf = XLSX.write(outWb, { bookType: "xlsx", type: "buffer" }) as Buffer;
+// Write as Node Buffer (best on Node runtime)
+const buf = XLSX.write(outWb, { bookType: "xlsx", type: "buffer" }) as Buffer;
 
-    // Convert Buffer -> pure ArrayBuffer (BodyInit-compatible, keeps bytes intact)
-    const outAb = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+// ✅ Make a fresh Uint8Array and copy bytes from Buffer
+const outBytes = new Uint8Array(buf.length);
+outBytes.set(buf); // copies Buffer -> Uint8Array
 
-    const responseHeaders = new Headers();
-    responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    responseHeaders.set("Content-Disposition", 'attachment; filename="meter_merge.xlsx"');
-    responseHeaders.set("Cache-Control", "no-store");
-    responseHeaders.set("Content-Length", String(buf.length));
+const responseHeaders = new Headers();
+responseHeaders.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+responseHeaders.set("Content-Disposition", 'attachment; filename="meter_merge.xlsx"');
+responseHeaders.set("Cache-Control", "no-store");
+responseHeaders.set("Content-Length", String(outBytes.byteLength));
 
-    return new Response(outAb, { status: 200, headers: responseHeaders });
+// ✅ Return Uint8Array (BodyInit accepts ArrayBufferView)
+return new Response(outBytes, { status: 200, headers: responseHeaders });
+
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Internal error";
     const stack = err instanceof Error ? err.stack : undefined;
